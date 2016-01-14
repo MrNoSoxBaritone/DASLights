@@ -16,6 +16,12 @@
   Notes from Vixster
   Also just as a note, not that there's any problem but sue doesn't think the next function runs right in that it goes 
   to green instead of red. 
+
+  To Do...
+  Time shift mode - compress all sequence timings by a given factor for testing purposes
+  Check sequence data - the next to last stage we put in last time may be unnecessary 
+  now the timing of the NEXT button is fixed.
+  Is the Emergency Stop causing three beeps??
   
  */
 #define VERSION 1.9
@@ -24,9 +30,9 @@
 #define EMULATIONMODE 0
 
 // Load hardware pin definitions
-#include <../../libraries/MyCommon/DASLights-pins.h>
+#include <DASLights-pins.h>
 // Load light sequences
-#include <../../libraries/MyCommon/DASLights-datastructures.h>
+#include <DASLights-datastructures.h>
 
 // Lamp flags - could set these to the same as the input pins
 #define redlamp 4
@@ -80,6 +86,7 @@ int beepdisabled = 0;
 
 /*
     The setup routine runs once at startup
+    Two second delay, then sets up the I/O pins and tests the lights
 */    
 void setup() {        
   Serial.println("Setup");
@@ -117,7 +124,7 @@ void setup() {
   delay(1000);
   
   checkSensors();
-  currentlamp = lampFlashRed;
+  currentlamp = lampSteadyRed;
   Serial.print( "Starting with lamp: ");
   Serial.println(currentlamp);
   
@@ -463,6 +470,7 @@ void doSequence(int sequenceAction){
       // Continue as normal, if past time, trigger new stage
       stageNow = millis() - stageStart;
       if (stageNow > thisStage.time*1000) {
+        Serial.println("");
         Serial.print("New Stage (");
         Serial.print(sequenceStage);
         Serial.print(") reached, current time=");
@@ -490,10 +498,11 @@ void doSequence(int sequenceAction){
     case doSequenceNextDetail:
       Serial.println("Next Detail forced");
       Serial.println(Sequences[sequence].name);
+      //Find the next "prepare" or "stop"stage
       while ((thisStage.type != stageTypePrepare) && (thisStage.type != stageTypeStop)) {
         sequenceStage++;
         thisStage = Sequences[sequence].stagelist[sequenceStage];
-        Serial.println(thisStage.type);
+        // Serial.println(thisStage.type);
       }
       if (thisStage.type == stageTypeStop) {
         state = stateWait;
@@ -502,6 +511,8 @@ void doSequence(int sequenceAction){
       else
       {
         Serial.println("Starting next detail");
+        stageStart = millis();    
+        newStage = true;    // less than 100ms implies new stage
       }
     break;
   }
@@ -518,9 +529,11 @@ void doSequence(int sequenceAction){
      //Do nothing - waiting for next stage
        if (thisStage.type == stageTypePrepare) {
          // showing 10 second countdown
+         //Serial.println("Current timer - " + stageNow);
          timer = (int) ((10000 - stageNow) / 1000);
          if ((stageNow % 1000) < 100) {    
-           Serial.println(timer);
+           Serial.print(timer);
+           Serial.print("...");
          }
        } 
        else
