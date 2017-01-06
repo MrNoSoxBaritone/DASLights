@@ -1,0 +1,3 @@
+[submodule "DASLights-common"]
+	path = DASLights-common
+	url = https://github.com/MrNoSoxBaritone/DASLights-common.git
