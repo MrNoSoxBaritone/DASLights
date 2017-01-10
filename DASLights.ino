@@ -5,10 +5,10 @@
   
   NOTES from FITA event
   
-  Had to frig the final part of the FITA sequences, to add a delay because it was only doing a single beep for sone reason...
+  Had to frig the final part of the FITA sequences, to add a delay because it was only doing a single beep for some reason...
   To do:
   FIX above fault
-  Change beep so it is a % of a total beep cycle length
+  Change beep so it is a % of a total beep cycle length - done
   Add pause button - ends current detail and goes to yellow
   Add display
   Add wireless
@@ -24,7 +24,7 @@
   Is the Emergency Stop causing three beeps??
   
  */
-#define VERSION 1.9
+#define VERSION 1.9.1
 
 // Compilation flag, uncomment for hardware-free test mode
 #define EMULATIONMODE 0
@@ -53,7 +53,7 @@
 #define doSequenceNextStage 2
 #define doSequenceNextDetail 3
 
-// Sequences
+// Shooting sequences
 #define sequenceFITA_3_1 0    //Three arrow FITA, one detail
 #define sequenceFITA_3_2 1    //Three arrow FITA, two details
 #define sequenceFITA_6_1 2    //Six arrow FITA, one detail
@@ -61,27 +61,35 @@
 #define sequenceGNAS     4    //GNAS 4 minute sequence
 #define sequenceCONTINUAL 5  
 
+// Beep states
+#define beepStateNEW -1
+#define beepStateON 1
+#define beepStateOFF 0
+
+// Beep timer - split of on/off time in ms
+#define beepOnTime 100
+#define beepOffTime 900
+
 
 // Global variables because I'm too lazy not to use them
-int beeplength = 500;
-int lamplength = 500;
 
-int sequence = 0;
+int sequence = 0;               // selected shooting sequence, determined by rotary control at startup
 int selectedlamp = 0;
 int sequenceStage = 0;
-long sequenceStart = 0;
-long detaillength = 0;
-int currentlamp = 0;
-int oldlamp = 0;
-long beeptime = 0;
-int beepcount = 0;
-int dimmer = 0;
-int state = 0;
-int pressingnextdetailpin = 0;
-int pressingPausePin = 0;
-long pauseStart = 0;
-int beepstate = 0;
-int beepdisabled = 0;
+long sequenceStart = 0;         // unused (to do with pause function in some way, so still compiled)
+//long detaillength = 0;          // unused
+int currentlamp = 0;            // current lamp state
+int oldlamp = 0;                // Previous lamp state
+long beeptime = 0;              // System time when the beepState last changed
+int beepcount = 0;              // Counter for number of requested beeps
+//int dimmer = 0;               // unused
+int currentState = 0;           // Current operational state of the system (sequence, wait, Pause etc)
+int pressingnextdetailpin = 0;  // press-to-make pins activate when released
+int pressingPausePin = 0;       // press-to-make pins activate when released
+//long pauseStart = 0;          // unused
+
+int currentBeepState = beepStateOFF;
+int beepDisabled = 0;
 
 
 /*
@@ -94,12 +102,13 @@ void setup() {
   // Start serial I/O
   Serial.begin(9600);
 
-  // Initialize all pins as an output.
+  // Initialize all lamp pins as an output.
   pinMode(redpin, OUTPUT);           //11
   pinMode(yellowpin, OUTPUT);        //10   
   pinMode(greenpin, OUTPUT);         //9
   pinMode(beeper, OUTPUT);           //8
   
+  // Initialize all control pins as an input.
   pinMode(emergencypin, INPUT);      //2
   pinMode(resetpin, INPUT);          //6
   pinMode(nextdetailpin, INPUT);     //5
@@ -108,6 +117,7 @@ void setup() {
   
   pinMode(pausepin, INPUT);          //12
     
+  // Initialise rotary controls as input
   pinMode(lampselect, INPUT);        //A2
   pinMode(dimmerPin, INPUT);         //A1
   pinMode(sequenceSelectPin, INPUT); //A0 
@@ -115,21 +125,23 @@ void setup() {
   //Set wait state of the system
   Serial.print("System start - DAS Lights version ");
   Serial.println(VERSION);
-  
+
+  // Test all lights in turn
   dolamps(lampSteadyRed);
   delay(1000);
   dolamps(lampSteadyYellow);
   delay(1000);
   dolamps(lampSteadyGreen);
   delay(1000);
-  
+
+  // Get initial states of all controls, and set red waiting lamp
   checkSensors();
   currentlamp = lampSteadyRed;
   Serial.print( "Starting with lamp: ");
   Serial.println(currentlamp);
   
   dolamps(currentlamp);
-  state = stateWait;
+  currentState = stateWait;
   Serial.println("Startup complete.");
   
 }
@@ -143,17 +155,20 @@ void setup() {
 void loop() { 
   checksequenceselect();                                          //Check where the main selector knob is
   checkSensors();                                                 //Check buttons and switches
-  if (state == stateSequence) doSequence(doSequenceContinue);     //Service the sequence loop
+  if (currentState == stateSequence) doSequence(doSequenceContinue);     //Service the sequence loop
   dobeeper();                                                     //Check the beep loop
   dolamps(currentlamp);                                           //And the lamp loop
   //lampson(currentlamp);                                         //And check lamps
   delay(100);                                                     //Then wait and do it all again
 }
 
-
+/*
+ *  Set lamps according to current lampState bitwise flag 
+ */
 void dolamps(int lampState)
 {
 #if defined (EMULATIONMODE)
+  // Emulation mode - output lamp states to serial if there has been a change
   if (lampState != oldlamp) {
     if(lampState & redlamp) Serial.print("RRR"); else Serial.print("xxx");
     if(lampState & yellowlamp) Serial.print("YYY"); else Serial.print("xxx");
@@ -171,19 +186,67 @@ void dolamps(int lampState)
 /*
     Beep loop
     The service loop for the automatic beep
+
+    beeptime is the system clock time when the currentBeepState was last changed
+    currentBeepState is the current requested beep 
+      -1 = a beep sequence has been requested
+      1 = currently beeping - start beep
+      0 = currently not beeping - stop beep
+    
 */
 void dobeeper() {
-  if (beepcount > 0) {
-    if (((millis() - beeptime) > (beeplength)) || (beepstate == -1)) {
-      if (beepstate < 1) {
-        digitalWrite(beeper, HIGH);  // on for beeplength
-        beepstate = 1;
-        beeptime = millis();      // then reset time
+  int beepStateCurrentTime = millis() - beeptime;
+
+  if (beepcount > 0) {    // There are still beeps left to go
+    if (currentBeepState = beepStateNEW) {  // New beep sequence requested
+      currentBeepState = beepStateON;       // New beep state
+      beeptime = millis();  // fresh state
+      digitalWrite(beeper, HIGH); // and switch on
+      Serial.println("BeepSTART");
+    }
+    else 
+    {
+      if (currentBeepState = beepStateON) {  // currently beeping
+        if (beepStateCurrentTime > beepOnTime) { // done enough
+          currentBeepState = beepStateOFF;
+          beeptime = millis();
+          digitalWrite(beeper, LOW);
+          beepcount--;
+          Serial.print("BeepON");
+        }
       }
       else
       {
-        digitalWrite(beeper, LOW);  // on for beeplength
-        beepstate = 0;
+        if (currentBeepState = beepStateOFF) {  // currently not beeping
+          if (beepStateCurrentTime > beepOffTime) { // done enough
+            currentBeepState = beepStateON;
+            beeptime = millis();
+            digitalWrite(beeper, HIGH);
+            Serial.println("OFF");
+          }
+        }
+      }
+    }
+  }
+  else
+  {       // Failsafe - beep OFF
+    digitalWrite(beeper, LOW);
+  }
+  
+/*
+  
+  // Do nothing if beepcount is zero (no beeps required or beeper switch is set OFF
+  if (beepcount > 0) {    // There are still beeps left to go
+    if (((millis() - beeptime) > (beeplength)) || (currentBeepState == -1)) { // either time to change beep or fresh request
+      if (currentBeepState < 1) {    // currently not beeping or fresh request
+        digitalWrite(beeper, HIGH);  // on for beeplength
+        currentBeepState = 1;
+        beeptime = millis();      // then reset time
+      }
+      else
+      {                       // currently beeping
+        digitalWrite(beeper, LOW);  // off for beeplength
+        currentBeepState = 0;
         beeptime = millis();      // then reset time
         beepcount--;
       }     
@@ -193,8 +256,8 @@ void dobeeper() {
   {
     digitalWrite(beeper, LOW);     // failsafe OFF
   }
+*/
 }
-
 
 
 /*
@@ -202,7 +265,7 @@ void dobeeper() {
 */
 void checklampselect() {
   int lampSelectReading = analogRead(lampselect);
-  if (state != stateSequence) { // don't care about lamp state if running a sequence
+  if (currentState != stateSequence) { // don't care about lamp state if running a sequence
   //  doSequence(doSequenceReset);
     if (lampSelectReading >700) {
     //  selectedlamp = greenlamp;
@@ -222,7 +285,7 @@ void checklampselect() {
         }
         else
         {
-    //      selectedlamp = redlamp;
+    //      selectedlamp = autolamp;
           currentlamp = lampSteadyRed;
         }
       }
@@ -237,7 +300,7 @@ void checklampselect() {
     Check the beeper switch and enable if required
 */
 void checkbeepselect() {
-  if (digitalRead(beepswitch) == HIGH) beepdisabled = 0; else beepdisabled = 1;
+  if (digitalRead(beepswitch) == HIGH) beepDisabled = 0; else beepDisabled = 1;
 }  
 
 
@@ -248,7 +311,7 @@ void checkbeepselect() {
 void checksequenceselect() {
   int sequenceSelectReading = analogRead(sequenceSelectPin);
 
-  if (state != stateSequence)  
+  if (currentState != stateSequence)  
   {  
     if (sequenceSelectReading >1000) {
       sequence = sequenceCONTINUAL;
@@ -292,12 +355,12 @@ void checksequenceselect() {
 
 void checkemergencystop() {
   // Emergency stop - red lamp and three beeps
-  if ((digitalRead(emergencypin) == HIGH) && (state != stateEmergencyStop)) {
-    if (state == stateSequence) {
+  if ((digitalRead(emergencypin) == HIGH) && (currentState != stateEmergencyStop)) {
+    if (currentState == stateSequence) {
       Serial.println("Button - EMERGENCYSTOP");
       beep(3);
       currentlamp = lampSteadyRed;
-      state = stateWait;
+      currentState = stateWait;
       sequenceStart = 0;
       doSequence(doSequenceReset);
     }
@@ -319,12 +382,12 @@ void checkSensors() {
   
   // "go" button pressed, not currently running a sequence, AND we are set to automatic lamps
   // all this could really be done from the doSequence service routine
-  if ((digitalRead(startpin) == HIGH) && (state != stateSequence) && (selectedlamp == autolamp)) {
-    state = stateSequence;         // Paused or not, go to sequence
+  if ((digitalRead(startpin) == HIGH) && (currentState != stateSequence) && (selectedlamp == autolamp)) {
+    currentState = stateSequence;         // Paused or not, go to sequence
     Serial.println("Button - START"); //and say so
-    Serial.println(state); //and say so
+    Serial.println(currentState); //and say so
       
-    if (state != statePause) {     // Not paused, so go for it
+    if (currentState != statePause) {     // Not paused, so go for it
       Serial.println("Button - START (not paused)"); //and say so
       // First set the sequence according to the rotary switch
       checksequenceselect();
@@ -334,21 +397,21 @@ void checkSensors() {
 
     
   // "reset" pressed, and not already waiting, reset the system
-  if ((digitalRead(resetpin) == HIGH) && (state != stateWait)) {
+  if ((digitalRead(resetpin) == HIGH) && (currentState != stateWait)) {
     Serial.println("Button - RESET");
     doSequence(doSequenceReset);
   }
 
   //  These pins must be checked for a high-low cycle so they only fire once
   if ((digitalRead(nextdetailpin) == HIGH) && (pressingnextdetailpin == 0)) {
-    if (state == stateSequence) {
+    if (currentState == stateSequence) {
       Serial.println("Button - NEXT pressed");
       pressingnextdetailpin = 1;
     }
   }
   if ((digitalRead(nextdetailpin) == LOW) && (pressingnextdetailpin == 1)) {
     Serial.println("Button - NEXT released");
-    if (state == stateSequence) {
+    if (currentState == stateSequence) {
       Serial.println("doSequenceNextDetail");
       pressingnextdetailpin = 0;
       doSequence(doSequenceNextDetail);
@@ -361,7 +424,7 @@ void checkSensors() {
   }
   if ((digitalRead(pausepin) == LOW) && (pressingPausePin == 1)) {
     pressingPausePin = 0;
-    if (state == stateSequence) {
+    if (currentState == stateSequence) {
       actionPause("ON");
     }
     else 
@@ -382,12 +445,12 @@ void checkSensors() {
 void actionPause(String Which) {
   long pauseTime;
   if (Which == "ON") {
-    state = statePause;
+    currentState = statePause;
     pauseTime = millis();
   }
   else
   {
-    state = stateSequence;
+    currentState = stateSequence;
     sequenceStart = sequenceStart + (pauseTime - millis());
   }
 }
@@ -397,7 +460,7 @@ void actionPause(String Which) {
     Set box back to wait state
 void resetAll() {
     currentlamp = redlamp;
-    state = stateWait;
+    currentState = stateWait;
 }
 */
 
@@ -407,16 +470,18 @@ void resetAll() {
     beep(0) will stop the beep at any point
 */
 void beep(int count) {
-  if (beepdisabled == 1) {
+  beepcount = count;
+  
+  if (beepDisabled == 1) {
     if (count == 0) {
       beepcount = 0;
-      beepstate = 0;
+      currentBeepState = beepStateOFF;
     }
     else
     {
       beepcount = count;
       beeptime = millis();
-      beepstate = -1;
+      currentBeepState = beepStateNEW;
     }
   }
 }
@@ -462,7 +527,7 @@ void doSequence(int sequenceAction){
     // Actually, reset is handled in the checksensors routine 
     // so this is probably not needed
       currentlamp = redlamp;
-      state = stateWait;
+      currentState = stateWait;
       sequenceStage = 0;
       stageStart = millis();
     break;
@@ -505,7 +570,7 @@ void doSequence(int sequenceAction){
         // Serial.println(thisStage.type);
       }
       if (thisStage.type == stageTypeStop) {
-        state = stateWait;
+        currentState = stateWait;
         Serial.println("No more details - STOP");
       }
       else
@@ -547,7 +612,7 @@ void doSequence(int sequenceAction){
       sequenceStage = thisStage.time; // for Goto stages, the time is used as the destination stage
       thisStage = Sequences[sequence].stagelist[sequenceStage];
       if (thisStage.time == 0) {
-        state = stateWait;
+        currentState = stateWait;
       }
       Serial.print("GOTO stage - moving to stage ");
       Serial.println(sequenceStage);
