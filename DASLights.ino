@@ -24,7 +24,7 @@
   Is the Emergency Stop causing three beeps??
   
  */
-#define VERSION 1.9.1
+#define VERSION "1.9.2"
 
 // Compilation flag, uncomment for hardware-free test mode
 #define EMULATIONMODE 0
@@ -84,8 +84,8 @@ long beeptime = 0;              // System time when the beepState last changed
 int beepcount = 0;              // Counter for number of requested beeps
 //int dimmer = 0;               // unused
 int currentState = 0;           // Current operational state of the system (sequence, wait, Pause etc)
-int pressingnextdetailpin = 0;  // press-to-make pins activate when released
-int pressingPausePin = 0;       // press-to-make pins activate when released
+//int pressingnextdetailpin = 0;  // press-to-make pins activate when released
+//int pressingPausePin = 0;       // press-to-make pins activate when released
 //long pauseStart = 0;          // unused
 
 int currentBeepState = beepStateOFF;
@@ -147,20 +147,18 @@ void setup() {
 }
 
 
-
-
 /* 
     The loop routine runs over and over again forever
 */
 void loop() { 
-  checksequenceselect();                                          //Check where the main selector knob is
-  checkSensors();                                                 //Check buttons and switches
-  if (currentState == stateSequence) doSequence(doSequenceContinue);     //Service the sequence loop
-  dobeeper();                                                     //Check the beep loop
-  dolamps(currentlamp);                                           //And the lamp loop
-  //lampson(currentlamp);                                         //And check lamps
-  delay(100);                                                     //Then wait and do it all again
-}
+  checksequenceselect();                                          // Check where the main selector knob is
+  checkSensors();                                                 // Check buttons and switches
+  if (currentState == stateSequence) doSequence(doSequenceContinue);     // If we're running a sequence, run the sequence loop
+  dobeeper();                                                     // Check the beep loop
+  dolamps(currentlamp);                                           // Set lamps according to lampState bitwise
+  
+  delay(100);                                                     // Then wait and do it all again
+  }
 
 /*
  *  Set lamps according to current lampState bitwise flag 
@@ -198,7 +196,7 @@ void dobeeper() {
   int beepStateCurrentTime = millis() - beeptime;
 
   if (beepcount > 0) {    // There are still beeps left to go
-    if (currentBeepState = beepStateNEW) {  // New beep sequence requested
+    if (currentBeepState == beepStateNEW) {  // New beep sequence requested
       currentBeepState = beepStateON;       // New beep state
       beeptime = millis();  // fresh state
       digitalWrite(beeper, HIGH); // and switch on
@@ -206,23 +204,23 @@ void dobeeper() {
     }
     else 
     {
-      if (currentBeepState = beepStateON) {  // currently beeping
+      if (currentBeepState == beepStateON) {  // currently beeping
         if (beepStateCurrentTime > beepOnTime) { // done enough
           currentBeepState = beepStateOFF;
           beeptime = millis();
           digitalWrite(beeper, LOW);
           beepcount--;
-          Serial.print("BeepON");
+          Serial.println("BeepOFF");
         }
       }
       else
       {
-        if (currentBeepState = beepStateOFF) {  // currently not beeping
+        if (currentBeepState == beepStateOFF) {  // currently not beeping
           if (beepStateCurrentTime > beepOffTime) { // done enough
             currentBeepState = beepStateON;
             beeptime = millis();
             digitalWrite(beeper, HIGH);
-            Serial.println("OFF");
+            Serial.println("BeepON");
           }
         }
       }
@@ -264,9 +262,9 @@ void dobeeper() {
     Check the auto/manual lamp setting
 */
 void checklampselect() {
-  int lampSelectReading = analogRead(lampselect);
-  if (currentState != stateSequence) { // don't care about lamp state if running a sequence
-  //  doSequence(doSequenceReset);
+  if ((currentState != stateSequence) && (currentState != statePause)) { // don't change lamp state here if running a sequence
+
+    int lampSelectReading = analogRead(lampselect);  // Not in a sequence, so pick up lamp selector reading
     if (lampSelectReading >700) {
     //  selectedlamp = greenlamp;
       currentlamp = lampSteadyGreen;
@@ -291,13 +289,11 @@ void checklampselect() {
       }
     }
   }
-  // 4th switch setting (0) is no specific lamp
-  // so leave currentlamp to be set by sequence, emergency or whatever
 }
 
 
 /*
-    Check the beeper switch and enable if required
+    Check the beeper switch and enable or disable as required
 */
 void checkbeepselect() {
   if (digitalRead(beepswitch) == HIGH) beepDisabled = 0; else beepDisabled = 1;
@@ -309,10 +305,9 @@ void checkbeepselect() {
     can change sequence only if not running one, otherwise does nothing
 */
 void checksequenceselect() {
-  int sequenceSelectReading = analogRead(sequenceSelectPin);
 
-  if (currentState != stateSequence)  
-  {  
+  if ((currentState != stateSequence) && (currentState != statePause)) {  
+    int sequenceSelectReading = analogRead(sequenceSelectPin); // Only check sequence selector if not running a sequence
     if (sequenceSelectReading >1000) {
       sequence = sequenceCONTINUAL;
 //      Serial.println("Sequence set to CONTINUAL");
@@ -364,6 +359,14 @@ void checkemergencystop() {
       sequenceStart = 0;
       doSequence(doSequenceReset);
     }
+    if (currentState == statePause) {
+      Serial.println("Button - STOP from PAUSE state");
+      // beep(3);           // No beeps for paused stop
+      currentlamp = lampSteadyRed;
+      currentState = stateWait;
+      sequenceStart = 0;
+      doSequence(doSequenceReset);
+    }
   }    
 }
 
@@ -372,7 +375,9 @@ void checkemergencystop() {
     Check all buttons and act accordingly
 */
 void checkSensors() {
-  
+  static int pressingResetPin = 0;
+  static int pressingnextdetailpin = 0;
+
   // Read lamp selector, and if not running a sequence, set currentlamp variable
   checklampselect();  
   // Read beeper switch and set or clear beepdisable
@@ -382,24 +387,52 @@ void checkSensors() {
   
   // "go" button pressed, not currently running a sequence, AND we are set to automatic lamps
   // all this could really be done from the doSequence service routine
-  if ((digitalRead(startpin) == HIGH) && (currentState != stateSequence) && (selectedlamp == autolamp)) {
+  if ((digitalRead(startpin) == HIGH) && (currentState != stateSequence) && (currentState != statePause) && (selectedlamp == autolamp)) {
     currentState = stateSequence;         // Paused or not, go to sequence
     Serial.println("Button - START"); //and say so
-    Serial.println(currentState); //and say so
       
     if (currentState != statePause) {     // Not paused, so go for it
-      Serial.println("Button - START (not paused)"); //and say so
       // First set the sequence according to the rotary switch
       checksequenceselect();
       doSequence(doSequenceNextStage); // Next Stage from not running a sequence, effectively "start"
     } 
   }
-
     
   // "reset" pressed, and not already waiting, reset the system
-  if ((digitalRead(resetpin) == HIGH) && (currentState != stateWait)) {
-    Serial.println("Button - RESET");
-    doSequence(doSequenceReset);
+  // RESET is now also PAUSE
+  // Behaviour is as follows:
+  //
+  //   While running a sequence, Initiate PAUSE.
+  //      - Sequence stops
+  //      - Light to yellow
+  //      - Start 10 second pause timer  (don't think we need this)
+  //
+  //   Can be interrupted by NEXT, RESET or STOP
+  //
+  //      NEXT - cancels PAUSE, stops the timer and starts the next sequence
+  //      RESET - (PAUSE button pressed again) RESET as normal
+  //      STOP - ends sequence silently
+  //
+  //
+  
+  if ((digitalRead(resetpin) == HIGH) && (pressingResetPin == 0)) {
+    Serial.println("Button - PAUSE/RESET pressed");
+    pressingResetPin = 1;
+  }
+
+  if ((digitalRead(resetpin) == LOW) && (pressingResetPin == 1)) {
+    Serial.println("Button - PAUSE/RESET released");
+    pressingResetPin = 0;
+    
+    
+    if (currentState == statePause) { //  already paused, so reset
+      Serial.println("Resetting system");
+      doSequence(doSequenceReset);        
+    } else if (currentState == stateSequence) { // running a sequence, so set up pause state
+      Serial.println("Entering PAUSE state");
+      currentlamp = yellowlamp;             //  Set yellow lamp
+      currentState = statePause;            //  Set PAUSE state
+    }
   }
 
   //  These pins must be checked for a high-low cycle so they only fire once
@@ -417,44 +450,7 @@ void checkSensors() {
       doSequence(doSequenceNextDetail);
     }
   }
-/*
-  //  Pause - Pause the current shooting sequence, and resume with no further signals
-  if ((digitalRead(pausepin) == HIGH) && (pressingPausePin == 0)){
-    pressingPausePin = 1;
-  }
-  if ((digitalRead(pausepin) == LOW) && (pressingPausePin == 1)) {
-    pressingPausePin = 0;
-    if (currentState == stateSequence) {
-      actionPause("ON");
-    }
-    else 
-    {
-      actionPause("OFF");
-    }
-  }
-  */
-
-    
 }
-
-/*
-    Set or release pause state
-    Add the time paused to sequenceStart, which 
-    extends the current sequence phase by that amount
-*/
-void actionPause(String Which) {
-  long pauseTime;
-  if (Which == "ON") {
-    currentState = statePause;
-    pauseTime = millis();
-  }
-  else
-  {
-    currentState = stateSequence;
-    sequenceStart = sequenceStart + (pauseTime - millis());
-  }
-}
-
 
 /*
     Set box back to wait state
@@ -503,19 +499,17 @@ void lampswarn() {
     Sequence servicing routine
     Called with a sequenceAction
     - doSequenceReset - cancel current sequence
-    - doSequenceContinue - probably no action
+    - doSequenceContinue - probably no action (call from main loop uses this)
     - doSequenceNextStage - Skip to next stage, whatever that is
+    - doSequenceNextDetail - Skip to the "wait" before the start of the next detail
     - doSequenceStartSequence
 */
 void doSequence(int sequenceAction){
-  static int sequenceStage = 0;
-  static long stageStart = 0; //this will be set at each state change
-  static long detailStart = 0;
-  stage thisStage;            // holds data for current stage
-  boolean newStage = false;
-  long stageNow;
-  long detailNow;
-  static long detailLength = 0;
+  static int sequenceStage = 0; // Maintained as the stage in the current sequence
+  static long stageStart = 0;   // this will be set to the current system time at each state change
+  stage thisStage;              // holds data for current stage
+  boolean newStage = false;     // Flag to signal a stage change
+  long stageNow;                
   int timer;
 
   thisStage = Sequences[sequence].stagelist[sequenceStage];
@@ -525,12 +519,14 @@ void doSequence(int sequenceAction){
     // Reset sequence
     case doSequenceReset:
     // Actually, reset is handled in the checksensors routine 
-    // so this is probably not needed
+    // so this is probably not neede
+      Serial.println("RESET activated");
       currentlamp = redlamp;
       currentState = stateWait;
       sequenceStage = 0;
       stageStart = millis();
     break;
+    
     case doSequenceContinue:
       // Continue as normal, if past time, trigger new stage
       stageNow = millis() - stageStart;
@@ -541,16 +537,15 @@ void doSequence(int sequenceAction){
         Serial.print(") reached, current time=");
         Serial.print(millis());
         Serial.print(" stageNow=");
-    //    Serial.println(now);
         Serial.print(stageNow);
         Serial.print(" stageStart=");
         Serial.println(stageStart);    
         sequenceStage++;
         stageStart = millis();    
         newStage = true;    // less than 100ms implies new stage
-      }
-    
+      }    
     break;
+    
     case doSequenceNextStage:
     // time for next stage
       sequenceStage++;
@@ -589,7 +584,7 @@ void doSequence(int sequenceAction){
     case stageActionStatic:
      // probably do nothing, "GO" button will do a doSequenceNextStage
     break;
-    
+
     case stageActionTimed:
      //Do nothing - waiting for next stage
        if (thisStage.type == stageTypePrepare) {
