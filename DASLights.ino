@@ -24,7 +24,7 @@
   Is the Emergency Stop causing three beeps??
   
  */
-#define VERSION "1.9.3" // Starting work on LCD integration, testing Git branching too...
+#define VERSION "1.9.2"
 
 // Compilation flag, uncomment for hardware-free test mode
 #define EMULATIONMODE 0
