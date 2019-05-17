@@ -170,8 +170,7 @@ void loop() {
  */
 void dolamps(int lampState)
 {
-#if defined (EMULATIONMODE)
-  // Emulation mode - output lamp states to serial if there has been a change
+#if defined (EMULATIONMODE)  // Emulation mode - output lamp states to serial if there has been a change
   if (lampState != oldlamp) {
     if(lampState & redlamp) Serial.print("RRR"); else Serial.print("xxx");
     if(lampState & yellowlamp) Serial.print("YYY"); else Serial.print("xxx");
@@ -189,13 +188,11 @@ void dolamps(int lampState)
 /*
     Beep loop
     The service loop for the automatic beep
-
-    beeptime is the system clock time when the currentBeepState was last changed
-    currentBeepState is the current requested beep 
-      -1 = a beep sequence has been requested
-      1 = currently beeping - start beep
-      0 = currently not beeping - stop beep
-    
+				beeptime is the system clock time when the currentBeepState was last changed
+				currentBeepState is the current requested beep
+					-1 = a beep sequence has been requested	(beepStateNEW)
+					1 = currently beeping - start beep				(beepStateOn)
+					0 = currently not beeping - stop beep		(beepStateOFF)
 */
 void dobeeper() {
   int beepStateCurrentTime = millis() - beeptime;
@@ -243,28 +240,17 @@ void dobeeper() {
 */
 void checklampselect() {
   if ((currentState != stateSequence) && (currentState != statePause)) { // don't change lamp state here if running a sequence
-
     int lampSelectReading = analogRead(lampselect);  // Not in a sequence, so pick up lamp selector reading
     if (lampSelectReading >700) {
-    //  selectedlamp = greenlamp;
       currentlamp = lampSteadyGreen;
-    }
-    else
-    {
+    } else {
       if (lampSelectReading >400) {
-    //    selectedlamp = yellowlamp;
         currentlamp = lampSteadyYellow;
-      }
-      else
-      {
-        if (lampSelectReading >100) {
-    //      selectedlamp = redlamp;
-          currentlamp = lampSteadyRed;
-        }
-        else
-        {
-    //      selectedlamp = autolamp;
-          currentlamp = lampSteadyRed;
+      } else {
+      		if (lampSelectReading >100) {
+      			currentlamp = lampSteadyRed;
+      		} else {
+              currentlamp = lampSteadyRed;
         }
       }
     }
@@ -278,13 +264,17 @@ void checklampselect() {
 void checkbeepselect() {
   if (digitalRead(beepswitch) == HIGH) {
     if (beepDisabled == 1) {
+#if defined (EMULATIONMODE)
       Serial.println("Beeps set OFF");
+#endif
       beepDisabled = 0; 
     }
   } else {
     if (beepDisabled == 0) {
-      Serial.println("Beeps set ON");
-      beepDisabled = 1;
+#if defined (EMULATIONMODE)
+    		Serial.println("Beeps set ON");
+#endif
+    		beepDisabled = 1;
     }
   }
 }  
@@ -368,13 +358,10 @@ void checkSensors() {
   static int pressingResetPin = 0;
   static int pressingnextdetailpin = 0;
 
-  // Read lamp selector, and if not running a sequence, set currentlamp variable
-  checklampselect();  
-  // Read beeper switch and set or clear beepdisable
-  checkbeepselect();
-  // Emergency stop - red lamp and three beeps
-  checkemergencystop();
-  
+  checklampselect(); // Read lamp selector, and if not running a sequence, set currentlamp variable
+  checkbeepselect(); // Read beeper switch and set or clear beepdisable
+  checkemergencystop(); // Emergency stop - red lamp and three beeps
+
   // "go" button pressed, not currently running a sequence, AND we are set to automatic lamps
   // all this could really be done from the doSequence service routine
   if ((digitalRead(startpin) == HIGH) && (currentState != stateSequence) && (selectedlamp == autolamp)) {
@@ -486,8 +473,6 @@ void lampswarn() {
   delay(100);
   dolamps(currentlamp);
 }
-
-
 
 /*==================================================================*/
 /*
